@@ -120,23 +120,63 @@ class RecompensaController {
    * GET /api/recompensas
    */
   async listarDisponibles(req, res) {
+  /**
+   * Listar recompensas disponibles (para clientes)
+   * GET /api/recompensas
+   * Solo muestra recompensas de empresas donde el cliente tiene puntos
+   */
+  //async listarDisponibles(req, res) {
     try {
-      const { empresaId, categoria, page = 1, limit = 20 } = req.query;
+      const { categoria, page = 1, limit = 20 } = req.query;
       const skip = (page - 1) * limit;
+      const usuario = req.usuario;
 
-      // Filtro base: activas y con stock
-      const filtro = { 
+      // Filtro base: solo activas y con stock
+      const filtro = {
         activo: true,
         $or: [
-          { stock: -1 },        // Ilimitado
+          { stock: -1 },        // Stock ilimitado
           { stock: { $gt: 0 } } // Con stock disponible
         ]
       };
-      
-      // Filtros opcionales
-      if (empresaId) {
-        filtro.empresa = empresaId;
+
+      // Si es cliente, filtrar por empresas donde tiene puntos
+      if (usuario.tipoUsuario === 'cliente') {
+        // Obtener cliente con sus puntos por empresa
+        const cliente = await Usuario.findById(usuario._id);
+        
+        // Extraer IDs de empresas donde tiene puntos
+        let empresasConPuntos = [];
+        
+        if (cliente.puntosPorEmpresa && cliente.puntosPorEmpresa.length > 0) {
+          // Solo empresas donde tiene puntos > 0
+          empresasConPuntos = cliente.puntosPorEmpresa
+            .filter(pe => pe.puntos > 0)
+            .map(pe => pe.empresa);
+        }
+
+        // Si no tiene puntos en ninguna empresa, devolver lista vacía
+        if (empresasConPuntos.length === 0) {
+          return res.status(200).json({
+            success: true,
+            data: {
+              recompensas: [],
+              mensaje: 'Aún no tienes puntos en ninguna empresa. ¡Genera tu QR y comienza a acumular!',
+              paginacion: {
+                total: 0,
+                pagina: parseInt(page),
+                totalPaginas: 0,
+                porPagina: parseInt(limit)
+              }
+            }
+          });
+        }
+
+        // Filtrar solo recompensas de esas empresas
+        filtro.empresa = { $in: empresasConPuntos };
       }
+
+      // Filtrar por categoría si se especifica
       if (categoria) {
         filtro.categoria = categoria;
       }
@@ -144,16 +184,38 @@ class RecompensaController {
       const [recompensas, total] = await Promise.all([
         Recompensa.find(filtro)
           .populate('empresa', 'nombreEmpresa telefono')
-          .sort({ puntosRequeridos: 1 }) // Ordenar por puntos (menor a mayor)
+          .sort({ puntosRequeridos: 1 }) // Ordenar por puntos requeridos
           .skip(skip)
           .limit(parseInt(limit)),
         Recompensa.countDocuments(filtro)
       ]);
 
+      // Si es cliente, agregar info de puntos disponibles por empresa
+      let recompensasConPuntos = recompensas;
+      
+      if (usuario.tipoUsuario === 'cliente') {
+        const cliente = await Usuario.findById(usuario._id);
+        
+        recompensasConPuntos = recompensas.map(r => {
+          const recompensaObj = r.toObject();
+          
+          // Buscar puntos del cliente en esta empresa
+          const puntosEmpresa = cliente.puntosPorEmpresa?.find(
+            pe => pe.empresa.toString() === r.empresa._id.toString()
+          );
+          
+          recompensaObj.puntosDisponibles = puntosEmpresa?.puntos || 0;
+          recompensaObj.puedeCanjear = recompensaObj.puntosDisponibles >= r.puntosRequeridos;
+          recompensaObj.puntosFaltantes = Math.max(0, r.puntosRequeridos - recompensaObj.puntosDisponibles);
+          
+          return recompensaObj;
+        });
+      }
+
       res.status(200).json({
         success: true,
         data: {
-          recompensas,
+          recompensas: recompensasConPuntos,
           paginacion: {
             total,
             pagina: parseInt(page),
@@ -171,7 +233,6 @@ class RecompensaController {
       });
     }
   }
-
   /**
    * Obtener detalle de una recompensa
    * GET /api/recompensas/:id
