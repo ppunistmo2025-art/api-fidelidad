@@ -9,7 +9,7 @@
  */
 
 const Recompensa = require('../models/Recompensa');
-
+const Usuario = require('../models/Usuario');
 class RecompensaController {
   /**
    * Crear nueva recompensa
